@@ -1,3 +1,13 @@
+## 0.1.4
+
+- `M3XLinearWavyProgressIndicator`: added `isFlat` to render a plain straight bar with
+  no wave motion (the wave animation is skipped entirely, not just visually flattened),
+  for platforms/contexts the wave motion wasn't tuned for. Defaults to `false` —
+  non-breaking.
+- `M3XLinearWavyProgressIndicator`: bars much shorter than `wavelength` now clamp to the
+  nearest whole number of wave cycles (minimum one) instead of rendering a cut-off
+  partial wave — fixes a cramped/malformed look at small sizes.
+
 ## 0.1.3
 
 - `M3XCircularWavyProgressIndicator`: added `loadingFillDuration` to control how long one

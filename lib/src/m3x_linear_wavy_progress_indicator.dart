@@ -70,6 +70,12 @@ class M3XLinearWavyProgressIndicator extends StatefulWidget {
   /// Defaults to [M3XProgressIndicatorDefaults.indicatorAmplitude].
   final double Function(double)? amplitude;
 
+  /// Renders a plain straight bar with no wave motion, while still driving
+  /// the same progress/loading fill logic. Useful on platforms this
+  /// indicator's motion wasn't tuned for — the wave animation is skipped
+  /// entirely rather than just visually flattened, so it costs nothing.
+  final bool isFlat;
+
   const M3XLinearWavyProgressIndicator({
     super.key,
     this.value,
@@ -85,6 +91,7 @@ class M3XLinearWavyProgressIndicator extends StatefulWidget {
     this.height = M3XProgressIndicatorDefaults.linearContainerHeight,
     this.width = double.infinity,
     this.amplitude,
+    this.isFlat = false,
   });
 
   @override
@@ -125,7 +132,7 @@ class _M3XLinearWavyProgressIndicatorState
       vsync: this,
       duration: Duration(milliseconds: (waveCycleSec * 1000).round()),
     );
-    if (widget.waveSpeed > 0) {
+    if (widget.waveSpeed > 0 && !widget.isFlat) {
       _waveOffsetController.repeat();
     }
 
@@ -166,8 +173,9 @@ class _M3XLinearWavyProgressIndicatorState
     super.didUpdateWidget(old);
 
     if (widget.waveSpeed != old.waveSpeed ||
-        widget.wavelength != old.wavelength) {
-      if (widget.waveSpeed > 0) {
+        widget.wavelength != old.wavelength ||
+        widget.isFlat != old.isFlat) {
+      if (widget.waveSpeed > 0 && !widget.isFlat) {
         final double waveCycleSec = widget.wavelength / widget.waveSpeed;
         _waveOffsetController.duration = Duration(
           milliseconds: (waveCycleSec * 1000).round(),
@@ -249,7 +257,7 @@ class _M3XLinearWavyProgressIndicatorState
               cache: _pathCache,
               progress: progress,
               waveOffset: _waveOffsetController.value,
-              amplitude: _amplitudeController.value,
+              amplitude: widget.isFlat ? 0.0 : _amplitudeController.value,
               color: activeColor,
               trackColor: trackColor,
               strokeWidth: widget.strokeWidth,

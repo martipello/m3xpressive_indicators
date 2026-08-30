@@ -48,21 +48,32 @@ class M3XLinearWavyProgressPainter extends CustomPainter {
     required M3XLinearWavyProgressPathCache cache,
   }) : _cache = cache;
 
+  // The nominal [wavelength] is tuned for a full-width bar. On a bar much
+  // shorter than that, it either cuts a wave off mid-cycle or crams in a
+  // partial one — clamping to the nearest whole number of cycles that
+  // actually fits (minimum one) keeps the shape clean at small sizes.
+  double _effectiveWavelength(double width) {
+    if (width <= 0 || wavelength <= 0) return wavelength;
+    final int waveCount = math.max(1, (width / wavelength).round());
+    return width / waveCount;
+  }
+
   // Pre-computes a full wavy path and scales it to fit size.
   WavyPathData _createWavyPath(Size size) {
     final Path path = Path();
     final double height = size.height;
     final double width = size.width;
+    final double effectiveWavelength = _effectiveWavelength(width);
 
     path.moveTo(0.0, 0.0);
 
-    final double halfWavelength = wavelength / 2.0;
+    final double halfWavelength = effectiveWavelength / 2.0;
     double anchorX = halfWavelength;
     double controlX = halfWavelength / 2.0;
     double controlY = height - strokeWidth;
 
     // Plot path with extra phase to support continuous scroll.
-    final double widthWithExtraPhase = width + wavelength * 2.0;
+    final double widthWithExtraPhase = width + effectiveWavelength * 2.0;
     while (anchorX <= widthWithExtraPhase) {
       path.quadraticBezierTo(controlX, controlY, anchorX, 0.0);
       anchorX += halfWavelength;
@@ -120,7 +131,8 @@ class M3XLinearWavyProgressPainter extends CustomPainter {
         (startFraction * width).clamp(strokeCapWidth, width - strokeCapWidth);
     final double barHead =
         (endFraction * width).clamp(strokeCapWidth, width - strokeCapWidth);
-    final double waveShift = amplitude > 0 ? waveOffset * wavelength : 0.0;
+    final double waveShift =
+        amplitude > 0 ? waveOffset * _effectiveWavelength(width) : 0.0;
 
     final double startDist = (barTail + waveShift) * pathData.scale;
     final double endDist = (barHead + waveShift) * pathData.scale;
