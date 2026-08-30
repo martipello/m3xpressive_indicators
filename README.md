@@ -4,6 +4,8 @@ Material 3 Expressive wavy progress and loading indicators for Flutter — circu
 linear, determinate and indeterminate — built to run on older Flutter/Dart SDKs than the
 ones the official Material 3 Expressive widgets require.
 
+![All five indicators — circular loading, circular determinate, circular indeterminate, linear loading, linear determinate](doc/screenshot.png)
+
 ## Widgets
 
 - `M3XCircularWavyProgressIndicator` / `M3XLinearWavyProgressIndicator` — determinate wavy
