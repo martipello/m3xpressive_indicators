@@ -79,12 +79,12 @@ const Duration kM3XCircularWavyLoadingTroughHoldDuration =
 // velocity dips but never reaches zero — see the depth constant below for the
 // exact floor/peak speed math.
 //
-// θ is driven directly by continuously-elapsed real time (this is the only
-// speed knob — seconds per revolution) rather than by a repeating 0→1
-// controller: a repeating controller's loop boundary lands on the same phase
-// every time, so anything periodic riding on it can compound awkwardly at
-// that boundary. Driving θ straight from elapsed time has no loop boundary
-// to begin with.
+// θ is driven directly by continuously-elapsed real time rather than by a
+// repeating 0→1 controller: a repeating controller's loop boundary lands on
+// the same phase every time, so anything periodic riding on it can compound
+// awkwardly at that boundary. Driving θ straight from elapsed time has no
+// loop boundary to begin with. Default seconds-per-revolution — see
+// M3XCircularWavyLoadingIndicator.rotationDuration to override per instance.
 const Duration kM3XCircularWavyLoadingRotationDuration =
     Duration(milliseconds: 2000);
 
@@ -126,6 +126,10 @@ class M3XCircularWavyLoadingIndicator extends StatefulWidget {
   /// How long the arc holds at its trough width before growing again.
   final Duration troughHoldDuration;
 
+  /// Seconds per revolution of the rotation's cycloid motion — the only
+  /// speed knob, since rotation isn't a simple constant angular velocity.
+  final Duration rotationDuration;
+
   const M3XCircularWavyLoadingIndicator({
     super.key,
     this.color,
@@ -142,6 +146,7 @@ class M3XCircularWavyLoadingIndicator extends StatefulWidget {
     this.troughWidthMax = kM3XCircularWavyLoadingTroughWidthMax,
     this.peakHoldDuration = kM3XCircularWavyLoadingPeakHoldDuration,
     this.troughHoldDuration = kM3XCircularWavyLoadingTroughHoldDuration,
+    this.rotationDuration = kM3XCircularWavyLoadingRotationDuration,
   });
 
   @override
@@ -185,8 +190,8 @@ class _M3XCircularWavyLoadingIndicatorState
       _wavePhaseController.repeat();
     }
 
-    _rotationHeartbeatController = AnimationController(
-        vsync: this, duration: kM3XCircularWavyLoadingRotationDuration);
+    _rotationHeartbeatController =
+        AnimationController(vsync: this, duration: widget.rotationDuration);
     _phaseController = AnimationController(
         vsync: this, duration: kM3XCircularWavyLoadingPhaseDuration);
 
@@ -269,7 +274,7 @@ class _M3XCircularWavyLoadingIndicatorState
               DateTime.now().difference(_rotationStartTime).inMicroseconds /
                   1e6;
           final double revolutionsPerSecond =
-              1000 / kM3XCircularWavyLoadingRotationDuration.inMilliseconds;
+              1000 / widget.rotationDuration.inMilliseconds;
           final double theta =
               elapsedSeconds * 2 * math.pi * revolutionsPerSecond;
           final double rotationRadians =

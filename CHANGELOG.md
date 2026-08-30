@@ -1,3 +1,9 @@
+## 0.1.2
+
+- `M3XCircularWavyLoadingIndicator`: added `rotationDuration` to control how fast the
+  cycloid rotation completes a revolution — previously fixed internally. Defaults to the
+  previous fixed value — non-breaking.
+
 ## 0.1.1
 
 - `M3XCircularWavyLoadingIndicator`: added `peakWidthMin`/`peakWidthMax` and
