@@ -21,6 +21,9 @@ import 'package:flutter/material.dart';
 import 'm3x_progress_indicator_defaults.dart';
 import 'painters/m3x_circular_wavy_progress_painter.dart';
 
+// Default duration for one fill-and-repeat cycle in loading mode — see
+// M3XCircularWavyProgressIndicator.loadingFillDuration to override per
+// instance.
 const Duration kM3XCircularWavyLoadingFillDuration =
     Duration(milliseconds: 1600);
 
@@ -68,6 +71,10 @@ class M3XCircularWavyProgressIndicator extends StatefulWidget {
   /// Defaults to [M3XProgressIndicatorDefaults.indicatorAmplitude].
   final double Function(double)? amplitude;
 
+  /// In loading mode (value: null), how long one fill-from-empty-to-full
+  /// cycle takes before repeating.
+  final Duration loadingFillDuration;
+
   const M3XCircularWavyProgressIndicator({
     super.key,
     this.value,
@@ -81,6 +88,7 @@ class M3XCircularWavyProgressIndicator extends StatefulWidget {
     this.waveSpeed = M3XProgressIndicatorDefaults.circularWavelength,
     this.size = M3XProgressIndicatorDefaults.circularContainerSize,
     this.amplitude,
+    this.loadingFillDuration = kM3XCircularWavyLoadingFillDuration,
   });
 
   @override
@@ -141,7 +149,7 @@ class _M3XCircularWavyProgressIndicatorState
 
     _loadingFillController = AnimationController(
       vsync: this,
-      duration: kM3XCircularWavyLoadingFillDuration,
+      duration: widget.loadingFillDuration,
     );
     if (_isLoading) {
       _loadingFillController.repeat();
@@ -164,6 +172,10 @@ class _M3XCircularWavyProgressIndicatorState
   @override
   void didUpdateWidget(covariant M3XCircularWavyProgressIndicator old) {
     super.didUpdateWidget(old);
+
+    if (widget.loadingFillDuration != old.loadingFillDuration) {
+      _loadingFillController.duration = widget.loadingFillDuration;
+    }
 
     if (widget.waveSpeed != old.waveSpeed ||
         widget.wavelength != old.wavelength) {

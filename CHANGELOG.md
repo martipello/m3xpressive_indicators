@@ -1,3 +1,9 @@
+## 0.1.3
+
+- `M3XCircularWavyProgressIndicator`: added `loadingFillDuration` to control how long one
+  fill-and-repeat cycle takes in loading mode — previously fixed internally. Defaults to
+  the previous fixed value — non-breaking.
+
 ## 0.1.2
 
 - `M3XCircularWavyLoadingIndicator`: added `rotationDuration` to control how fast the
