@@ -1,6 +1,6 @@
 name: m3xpressive_indicators
 description: Material 3 Expressive wavy progress and loading indicators — circular and linear, determinate and indeterminate — for Flutter SDKs older than the ones the official widgets require.
-version: 0.1.0
+version: 0.1.1
 homepage: https://github.com/martipello/m3xpressive_indicators
 repository: https://github.com/martipello/m3xpressive_indicators
 

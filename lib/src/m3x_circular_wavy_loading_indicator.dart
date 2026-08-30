@@ -39,12 +39,16 @@ import 'package:flutter/material.dart';
 import 'm3x_progress_indicator_defaults.dart';
 import 'painters/m3x_circular_wavy_loading_painter.dart';
 
-// Each "head grows" phase picks a random peak arc width in this range.
+// Default "head grows" phase peak arc width range — see
+// M3XCircularWavyLoadingIndicator.peakWidthMin/Max to override per instance.
+// Larger circles tend to want a narrower range than the default, since the
+// same fraction of the ring spans more pixels.
 const double kM3XCircularWavyLoadingPeakWidthMin = 0.45;
 const double kM3XCircularWavyLoadingPeakWidthMax = 0.80;
 
-// Each "tail catches up" phase picks a random resting (trough) arc width in
-// this range — the arc never fully collapses to a point.
+// Default "tail catches up" phase resting (trough) arc width range — see
+// M3XCircularWavyLoadingIndicator.troughWidthMin/Max to override per
+// instance. The arc never fully collapses to a point.
 const double kM3XCircularWavyLoadingTroughWidthMin = 0.10;
 const double kM3XCircularWavyLoadingTroughWidthMax = 0.18;
 
@@ -53,9 +57,13 @@ const double kM3XCircularWavyLoadingTroughWidthMax = 0.18;
 const Duration kM3XCircularWavyLoadingPhaseDuration =
     Duration(milliseconds: 666);
 
-// How long the arc holds still at the peak/trough width before reversing
-// direction, rather than immediately snapping into the next phase.
-const Duration kM3XCircularWavyLoadingHoldDuration =
+// Default hold durations at the peak/trough width before reversing
+// direction, rather than immediately snapping into the next phase — see
+// M3XCircularWavyLoadingIndicator.peakHoldDuration/troughHoldDuration to
+// give the two different lengths (e.g. a longer peak, a brief trough).
+const Duration kM3XCircularWavyLoadingPeakHoldDuration =
+    Duration(milliseconds: 800);
+const Duration kM3XCircularWavyLoadingTroughHoldDuration =
     Duration(milliseconds: 800);
 
 // Rotation follows a cycloid-like motion profile — the path traced by a
@@ -101,6 +109,23 @@ class M3XCircularWavyLoadingIndicator extends StatefulWidget {
   final double waveSpeed;
   final double size;
 
+  /// Range the active arc's peak width is randomly picked from, as a
+  /// fraction of the full ring (0.0–1.0).
+  final double peakWidthMin;
+  final double peakWidthMax;
+
+  /// Range the active arc's resting (trough) width is randomly picked from,
+  /// as a fraction of the full ring (0.0–1.0). Never reaches 0 — the arc
+  /// doesn't fully collapse to a point.
+  final double troughWidthMin;
+  final double troughWidthMax;
+
+  /// How long the arc holds at its peak width before shrinking back down.
+  final Duration peakHoldDuration;
+
+  /// How long the arc holds at its trough width before growing again.
+  final Duration troughHoldDuration;
+
   const M3XCircularWavyLoadingIndicator({
     super.key,
     this.color,
@@ -111,6 +136,12 @@ class M3XCircularWavyLoadingIndicator extends StatefulWidget {
     this.wavelength = M3XProgressIndicatorDefaults.circularWavelength,
     this.waveSpeed = kM3XCircularWavyLoadingWaveSpeed,
     this.size = M3XProgressIndicatorDefaults.circularContainerSize,
+    this.peakWidthMin = kM3XCircularWavyLoadingPeakWidthMin,
+    this.peakWidthMax = kM3XCircularWavyLoadingPeakWidthMax,
+    this.troughWidthMin = kM3XCircularWavyLoadingTroughWidthMin,
+    this.troughWidthMax = kM3XCircularWavyLoadingTroughWidthMax,
+    this.peakHoldDuration = kM3XCircularWavyLoadingPeakHoldDuration,
+    this.troughHoldDuration = kM3XCircularWavyLoadingTroughHoldDuration,
   });
 
   @override
@@ -166,18 +197,19 @@ class _M3XCircularWavyLoadingIndicatorState
   void _startNextPhase() {
     if (!mounted) return;
 
-    if (_headGrowing) {
-      final double width = kM3XCircularWavyLoadingPeakWidthMin +
-          _random.nextDouble() *
-              (kM3XCircularWavyLoadingPeakWidthMax -
-                  kM3XCircularWavyLoadingPeakWidthMin);
+    final bool wasGrowing = _headGrowing;
+    final Duration holdDuration =
+        wasGrowing ? widget.peakHoldDuration : widget.troughHoldDuration;
+
+    if (wasGrowing) {
+      final double width = widget.peakWidthMin +
+          _random.nextDouble() * (widget.peakWidthMax - widget.peakWidthMin);
       _phaseFrom = _headAbs;
       _phaseTo = _tailAbs + width;
     } else {
-      final double width = kM3XCircularWavyLoadingTroughWidthMin +
+      final double width = widget.troughWidthMin +
           _random.nextDouble() *
-              (kM3XCircularWavyLoadingTroughWidthMax -
-                  kM3XCircularWavyLoadingTroughWidthMin);
+              (widget.troughWidthMax - widget.troughWidthMin);
       _phaseFrom = _tailAbs;
       _phaseTo = _headAbs - width;
     }
@@ -186,14 +218,14 @@ class _M3XCircularWavyLoadingIndicatorState
       if (!mounted) return;
       // Hold at the peak/trough width — the controller stays at 1.0, so
       // animatingValue keeps rendering _phaseTo unchanged during the wait.
-      _holdTimer = Timer(kM3XCircularWavyLoadingHoldDuration, () {
+      _holdTimer = Timer(holdDuration, () {
         if (!mounted) return;
-        if (_headGrowing) {
+        if (wasGrowing) {
           _headAbs = _phaseTo;
         } else {
           _tailAbs = _phaseTo;
         }
-        _headGrowing = !_headGrowing;
+        _headGrowing = !wasGrowing;
         _startNextPhase();
       });
     });
