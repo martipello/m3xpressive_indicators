@@ -1,19 +1,34 @@
-// Vibes-accurate M3 indeterminate circular wavy indicator, following the
-// head/tail model used by the classic Material circular indeterminate
-// spinner (CircularIndeterminateAnimatorDelegate in
-// material-components-android): the leading (head) edge grows out from the
-// trailing (tail) edge to a peak width, then the tail catches up most of the
-// way to the head, shrinking the arc back down to a resting (trough) width
-// rather than a literal zero-width point. Unlike the reference spec, the
-// peak and trough widths here are randomized each phase rather than fixed,
-// so consecutive cycles don't look identical.
+// Vibes-accurate M3 indeterminate circular wavy indicator. Four phases repeat
+// in a cycle, verified against a real M3 spec reference recording (a) by eye
+// against the actual footage and (b) by frame-by-frame angle tracking:
+//
+//  1. Grow: the head (leading edge) advances forward from the tail to a peak
+//     width, while the tail stays put. Rotation runs at its normal steady
+//     speed throughout.
+//  2. Peak hold: both edges stay put — the arc just rotates in place, at
+//     normal speed, for an exact number of full revolutions
+//     (peakHoldRevolutions).
+//  3. Shrink: the tail advances forward to catch up toward the head — like a
+//     worm's tail-end being drawn into a hole, disappearing from the near
+//     end while the far end (head) stays exactly where it is — down to a
+//     resting trough width rather than a literal zero-width point. Rotation
+//     decelerates smoothly through this phase, coming to a stop exactly as
+//     the shrink completes.
+//  4. Trough hold: both edges stay put again, while rotation re-accelerates
+//     from a stop back up to normal speed over troughHoldRevolutions.
+//
+// Then it grows again. Peak and trough widths are randomized each cycle
+// rather than fixed, so consecutive cycles don't look identical.
 //
 // Continuity across phases is guaranteed by construction, not by an
-// algebraic formula: each phase always animates FROM the live head/tail
-// value the previous phase actually ended on (captured at the instant the
-// new phase starts), TO a freshly chosen target — so however much the
-// target varies, there is never a gap between "where the arc was" and
-// "where it starts animating from next".
+// algebraic formula: each animated phase always starts FROM the live value
+// the previous phase actually left it at, TO a freshly chosen target — so
+// however much the target varies, there is never a gap between "where the
+// arc was" and "where it starts animating from next". Rotation angle is
+// accumulated the same way: each phase's contribution is added to a running
+// total when it completes, so the transition between constant-speed and
+// ramping phases is always continuous in position (never a jump), even
+// though speed itself changes abruptly at phase boundaries.
 //
 // This is a SEPARATE widget from M3XCircularWavyProgressIndicator, which
 // instead renders a "loading" fill-and-repeat motion. Both are kept because
@@ -30,7 +45,6 @@
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
 
-import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui';
 
@@ -38,64 +52,86 @@ import 'package:flutter/material.dart';
 
 import 'm3x_progress_indicator_defaults.dart';
 import 'painters/m3x_circular_wavy_loading_painter.dart';
+import 'painters/wavy_arc_path.dart' show waveCycleCount;
 
-// Default "head grows" phase peak arc width range — see
+// Default "grow" phase peak arc width range — see
 // M3XCircularWavyLoadingIndicator.peakWidthMin/Max to override per instance.
 // Larger circles tend to want a narrower range than the default, since the
 // same fraction of the ring spans more pixels.
 const double kM3XCircularWavyLoadingPeakWidthMin = 0.45;
 const double kM3XCircularWavyLoadingPeakWidthMax = 0.80;
 
-// Default "tail catches up" phase resting (trough) arc width range — see
+// Default "shrink" phase resting (trough) arc width range — see
 // M3XCircularWavyLoadingIndicator.troughWidthMin/Max to override per
 // instance. The arc never fully collapses to a point.
 const double kM3XCircularWavyLoadingTroughWidthMin = 0.10;
 const double kM3XCircularWavyLoadingTroughWidthMax = 0.18;
 
-// Duration of a single head-grows or tail-catches-up phase (half of the
-// classic spec's ~1333ms full grow-then-collapse cycle).
+// Duration of the grow or shrink phase's arc-length animation.
 const Duration kM3XCircularWavyLoadingPhaseDuration =
-    Duration(milliseconds: 666);
+    Duration(milliseconds: 1600);
 
-// Default hold durations at the peak/trough width before reversing
-// direction, rather than immediately snapping into the next phase — see
-// M3XCircularWavyLoadingIndicator.peakHoldDuration/troughHoldDuration to
-// give the two different lengths (e.g. a longer peak, a brief trough).
-const Duration kM3XCircularWavyLoadingPeakHoldDuration =
-    Duration(milliseconds: 800);
-const Duration kM3XCircularWavyLoadingTroughHoldDuration =
-    Duration(milliseconds: 800);
+// How many full revolutions the arc spins in place at the peak width before
+// shrinking — see M3XCircularWavyLoadingIndicator.peakHoldRevolutions to
+// override. Rotation runs at constant speed during this hold, so this is an
+// exact revolution count, not an approximation.
+const double kM3XCircularWavyLoadingPeakHoldRevolutions = 1.5;
 
-// Rotation follows a cycloid-like motion profile — the path traced by a
-// point on the rim of a rolling wheel — rather than a plain linear turn: it
-// always advances forward (never reverses), slowing down once per revolution
-// before racing through the rest of the turn at above-average speed. This is
-// what gives the "pear-shaped wheel" look — a lopsided rotation speed, not a
-// back-and-forth pendulum.
-//
-// A pure cycloid (rotation = θ - sin θ) has a velocity of exactly zero at
-// that slow point, which reads as a dead stop rather than a slowdown.
-// kM3XCircularWavyLoadingCycloidDepth scales the sine term down (< 1) so the
-// velocity dips but never reaches zero — see the depth constant below for the
-// exact floor/peak speed math.
-//
-// θ is driven directly by continuously-elapsed real time rather than by a
-// repeating 0→1 controller: a repeating controller's loop boundary lands on
-// the same phase every time, so anything periodic riding on it can compound
-// awkwardly at that boundary. Driving θ straight from elapsed time has no
-// loop boundary to begin with. Default seconds-per-revolution — see
+// How many rotation-periods' worth of time the arc spends at the trough
+// width — see M3XCircularWavyLoadingIndicator.troughHoldRevolutions to
+// override. Rotation dips partway through this hold (see
+// kM3XCircularWavyLoadingTroughHoldDipDepth) rather than ramping the whole
+// way through it, so this constant sets the hold's duration, not directly
+// its angle. Kept short because the dip itself takes real time to ease into
+// and out of — a long hold just means more time spent slow.
+const double kM3XCircularWavyLoadingTroughHoldRevolutions = 1.0;
+
+// How deep the trough hold's rotation dip goes, as a fraction of normal
+// speed (1.0 = touches zero, i.e. a literal stop; 0.0 = no dip at all,
+// constant speed throughout). A literal stop measurably reads as a pause —
+// even placed at the hold's midpoint, safely away from the shrink boundary,
+// it still held near-zero speed for ~500ms — so this stops short of zero:
+// speed dips to (1 - depth) of normal, slow enough to read as "settling" but
+// never fully stopping, the same principle already used for the rotation's
+// original per-revolution wobble.
+const double kM3XCircularWavyLoadingTroughHoldDipDepth = 0.7;
+
+// Seconds per revolution at normal (unramped) speed — see
 // M3XCircularWavyLoadingIndicator.rotationDuration to override per instance.
 const Duration kM3XCircularWavyLoadingRotationDuration =
     Duration(milliseconds: 2000);
 
-// How deep the cycloid's speed dip goes, as a fraction of the pure cycloid
-// (1.0 = touches zero velocity, i.e. looks like a dead stop; 0.0 = perfectly
-// even speed, no lopsidedness at all). At 0.6, speed ranges from 40% to 160%
-// of the average — a clear slowdown that never looks fully stopped.
-const double kM3XCircularWavyLoadingCycloidDepth = 0.6;
-
 // How fast the color scrolls along the squiggle (logical pixels per second).
-const double kM3XCircularWavyLoadingWaveSpeed = 5.0;
+// At the default wavelength (20), 5.0 took a full 4 seconds to scroll one
+// wavelength — slow enough that, combined with the arc-length pulse's own
+// motion, the squiggle reads as having stopped rather than merely scrolling
+// slowly. 20.0 matches M3XCircularWavyProgressIndicator's wave speed, which
+// scrolls a full wavelength every ~1s — clearly, unambiguously moving.
+const double kM3XCircularWavyLoadingWaveSpeed = 20.0;
+
+// Below this size the wave flattens to a plain smooth arc, ramping up to
+// full amplitude by kM3XCircularWavyFullSize. Matches the M3 spec's own size
+// reference, where the two smallest circular sizes (40dp, 44dp) render with
+// no wave at all — only 48dp and up show the wavy variant, all at the same
+// fixed wavelength. A small ring keeping the same wavelength as a large one
+// crams in too many cycles for its circumference (a tight starburst/gear
+// look), so rather than shrinking the wavelength too (which just trades that
+// problem for showing almost no wave at all — visible wave count is capped
+// by how much of the ring the arc actually sweeps, not the full
+// circumference), small rings drop the wave entirely instead.
+const double kM3XCircularWavyMinSize = 44.0;
+const double kM3XCircularWavyFullSize = 48.0;
+
+// Minimum number of wave cycles a [forceWavy] ring is guaranteed to show,
+// regardless of size. At the plain fixed wavelength, a small ring's shorter
+// circumference naturally fits fewer cycles — a 32dp ring only manages 4,
+// which barely reads as "wavy" rather than just a slightly bumpy circle,
+// undermining the entire point of forcing the wave on in the first place.
+// Only ever lowers the effective wavelength (raising the wave count), never
+// raises it — larger rings already clear this minimum on their own.
+const double kM3XCircularWavyForceWavyMinWaveCount = 7.0;
+
+enum _PulsePhase { grow, peakHold, shrink, troughHold }
 
 /// A Material 3 Expressive indeterminate circular wavy progress indicator,
 /// matching the spec's rotating motion.
@@ -105,9 +141,17 @@ class M3XCircularWavyLoadingIndicator extends StatefulWidget {
   final double strokeWidth;
   final double trackStrokeWidth;
   final double gapSize;
+
   final double wavelength;
   final double waveSpeed;
   final double size;
+
+  /// Skips the below-[kM3XCircularWavyMinSize] amplitude taper and always
+  /// renders at full wave amplitude, regardless of [size]. The taper matches
+  /// the M3 spec's own size reference, but callers who want a small
+  /// indicator that still reads as wavy — a brand choice, not a spec one —
+  /// can opt out with this instead of fighting the default.
+  final bool forceWavy;
 
   /// Range the active arc's peak width is randomly picked from, as a
   /// fraction of the full ring (0.0–1.0).
@@ -120,14 +164,16 @@ class M3XCircularWavyLoadingIndicator extends StatefulWidget {
   final double troughWidthMin;
   final double troughWidthMax;
 
-  /// How long the arc holds at its peak width before shrinking back down.
-  final Duration peakHoldDuration;
+  /// How many full revolutions the arc spins in place at the peak width
+  /// before shrinking. Rotation is at constant speed during this hold, so
+  /// this is an exact count.
+  final double peakHoldRevolutions;
 
-  /// How long the arc holds at its trough width before growing again.
-  final Duration troughHoldDuration;
+  /// How many rotation-periods' worth of time the arc spends at the trough
+  /// width before growing again, while rotation re-accelerates from a stop.
+  final double troughHoldRevolutions;
 
-  /// Seconds per revolution of the rotation's cycloid motion — the only
-  /// speed knob, since rotation isn't a simple constant angular velocity.
+  /// Seconds per revolution at normal (unramped) speed.
   final Duration rotationDuration;
 
   const M3XCircularWavyLoadingIndicator({
@@ -140,12 +186,13 @@ class M3XCircularWavyLoadingIndicator extends StatefulWidget {
     this.wavelength = M3XProgressIndicatorDefaults.circularWavelength,
     this.waveSpeed = kM3XCircularWavyLoadingWaveSpeed,
     this.size = M3XProgressIndicatorDefaults.circularContainerSize,
+    this.forceWavy = false,
     this.peakWidthMin = kM3XCircularWavyLoadingPeakWidthMin,
     this.peakWidthMax = kM3XCircularWavyLoadingPeakWidthMax,
     this.troughWidthMin = kM3XCircularWavyLoadingTroughWidthMin,
     this.troughWidthMax = kM3XCircularWavyLoadingTroughWidthMax,
-    this.peakHoldDuration = kM3XCircularWavyLoadingPeakHoldDuration,
-    this.troughHoldDuration = kM3XCircularWavyLoadingTroughHoldDuration,
+    this.peakHoldRevolutions = kM3XCircularWavyLoadingPeakHoldRevolutions,
+    this.troughHoldRevolutions = kM3XCircularWavyLoadingTroughHoldRevolutions,
     this.rotationDuration = kM3XCircularWavyLoadingRotationDuration,
   });
 
@@ -158,23 +205,39 @@ class _M3XCircularWavyLoadingIndicatorState
     extends State<M3XCircularWavyLoadingIndicator>
     with TickerProviderStateMixin {
   late AnimationController _wavePhaseController;
-  // Ticks continuously purely to trigger AnimatedBuilder rebuilds — its own
-  // value isn't used, since rotation is driven from elapsed wall time instead
-  // (see kM3XCircularWavyLoadingRotationDuration).
-  late AnimationController _rotationHeartbeatController;
+
+  // Drives the grow/shrink arc-length animation (duration =
+  // kM3XCircularWavyLoadingPhaseDuration) and, during those same two phases,
+  // also the rotation-speed ramp (constant during grow, linear decel during
+  // shrink) — its 0..1 value is `t` for both.
   late AnimationController _phaseController;
 
-  late final DateTime _rotationStartTime = DateTime.now();
-  final math.Random _random = math.Random();
-  Timer? _holdTimer;
+  // Drives the peak/trough holds — duration is set dynamically per phase
+  // (peakHoldRevolutions or troughHoldRevolutions worth of rotationDuration)
+  // right before each hold starts. Its 0..1 value is `t` for the
+  // rotation-speed ramp during those two phases (constant during peak hold,
+  // linear accel during trough hold).
+  late AnimationController _holdController;
 
-  // The head/tail values the previous phase actually committed to — always
-  // exactly where the arc currently is, never recomputed from a formula.
+  final math.Random _random = math.Random();
+
+  _PulsePhase _pulsePhase = _PulsePhase.grow;
+
+  // Total rotation angle (radians) accumulated by every phase that has
+  // already fully completed — the current phase's own in-progress
+  // contribution is added to this at render time, never mutated mid-phase.
+  double _rotationAngleAtPhaseStart = 0.0;
+
+  // The head/tail values the previous grow/shrink phase actually committed
+  // to — always exactly where the arc currently is, never recomputed from a
+  // formula.
   double _headAbs = 0.0;
   double _tailAbs = 0.0;
-  bool _headGrowing = true;
   double _phaseFrom = 0.0;
   double _phaseTo = 0.0;
+
+  double get _omega0 =>
+      2 * math.pi / (widget.rotationDuration.inMicroseconds / 1e6);
 
   @override
   void initState() {
@@ -186,62 +249,226 @@ class _M3XCircularWavyLoadingIndicatorState
       vsync: this,
       duration: Duration(milliseconds: (waveCycleSec * 1000).round()),
     );
-    if (widget.waveSpeed > 0) {
-      _wavePhaseController.repeat();
+    // A phase transition is driven by the controller's AnimationStatus,
+    // not by chaining .then() on the Future .forward() returns — that
+    // Future resolves via a microtask one frame later than the status
+    // change itself, so every single phase boundary would otherwise render
+    // one extra frame with the old phase frozen at its final value before
+    // the new phase's first frame snaps in — a stutter that reads as a
+    // little "roll back" right before the arc starts growing again.
+    void onStatusChanged(AnimationStatus status) {
+      if (status == AnimationStatus.completed) _completePhase();
     }
 
-    _rotationHeartbeatController =
-        AnimationController(vsync: this, duration: widget.rotationDuration);
     _phaseController = AnimationController(
-        vsync: this, duration: kM3XCircularWavyLoadingPhaseDuration);
+        vsync: this, duration: kM3XCircularWavyLoadingPhaseDuration)
+      ..addStatusListener(onStatusChanged);
+    _holdController = AnimationController(vsync: this, duration: Duration.zero)
+      ..addStatusListener(onStatusChanged);
 
-    _rotationHeartbeatController.repeat();
+    // The first phase (grow) starts the wave scroll itself via
+    // _resumeWaveScroll — see _startNextPhase.
     _startNextPhase();
+  }
+
+  Duration _scaledDuration(Duration base, double factor) {
+    return Duration(microseconds: (base.inMicroseconds * factor).round());
+  }
+
+  // ∫[0,t] midBump(s) ds, where midBump(t) = 4·S·(1-S) and
+  // S(t) = 3t²-2t³ (smoothstep) — midBump is 0 at t=0 and t=1, peaks at 1
+  // at t=0.5, with zero slope at both ends (the simplest symmetric shape
+  // with all of those properties at once). Expanded out algebraically so
+  // it's a plain polynomial to evaluate, rather than needing midBump itself.
+  static double _midBumpIntegral(double t) {
+    final double t2 = t * t, t3 = t2 * t, t4 = t3 * t, t5 = t4 * t;
+    final double t6 = t5 * t, t7 = t6 * t;
+    return 4 * t3 - 2 * t4 - 7.2 * t5 + 8 * t6 - (16 / 7) * t7;
+  }
+
+  // Angle (radians) covered by [phase] once it has run for fraction [t]
+  // (0..1) of its own duration — a closed form of the phase's velocity
+  // profile integrated over time, not a per-frame numerical integration.
+  //
+  // The slow point lives entirely inside the trough hold, at its midpoint —
+  // not at the boundary between shrink and the trough hold. The arc visually
+  // finishing its shrink (tail meeting head) at the exact same instant
+  // rotation crawls to its slowest reads as one combined "everything
+  // stopped" illusion, even when neither one, alone, is a real discontinuity.
+  // So shrink keeps constant velocity all the way through (matching peak
+  // hold exactly, no ramp at all), and the trough hold's velocity is
+  // ω₀·(1 - depth·_midBump(t)): full speed at both t=0 (matching shrink) and
+  // t=1 (matching grow), dipping to (1-depth) of normal speed at t=0.5, well
+  // after the arc has already settled at its minimum size.
+  double _angleGainedInPhase(_PulsePhase phase, double t) {
+    switch (phase) {
+      case _PulsePhase.grow:
+        final double seconds =
+            kM3XCircularWavyLoadingPhaseDuration.inMicroseconds / 1e6;
+        return _omega0 * t * seconds; // constant velocity
+      case _PulsePhase.peakHold:
+        final double seconds = _holdController.duration!.inMicroseconds / 1e6;
+        return _omega0 * t * seconds; // constant velocity
+      case _PulsePhase.shrink:
+        final double seconds =
+            kM3XCircularWavyLoadingPhaseDuration.inMicroseconds / 1e6;
+        return _omega0 * t * seconds; // constant velocity — no dip here
+      case _PulsePhase.troughHold:
+        final double seconds = _holdController.duration!.inMicroseconds / 1e6;
+        return _omega0 *
+            seconds *
+            (t -
+                kM3XCircularWavyLoadingTroughHoldDipDepth *
+                    _midBumpIntegral(t));
+    }
   }
 
   void _startNextPhase() {
     if (!mounted) return;
 
-    final bool wasGrowing = _headGrowing;
-    final Duration holdDuration =
-        wasGrowing ? widget.peakHoldDuration : widget.troughHoldDuration;
+    switch (_pulsePhase) {
+      case _PulsePhase.grow:
+        _resumeWaveScroll();
+        final double width = widget.peakWidthMin +
+            _random.nextDouble() *
+                (widget.peakWidthMax - widget.peakWidthMin);
+        _phaseFrom = _headAbs;
+        _phaseTo = _tailAbs + width;
+        _phaseController.forward(from: 0);
+        break;
+      case _PulsePhase.peakHold:
+        _pauseWaveScrollAtZeroCrossing();
+        _holdController.duration = _scaledDuration(
+            widget.rotationDuration, widget.peakHoldRevolutions);
+        _holdController.forward(from: 0);
+        break;
+      case _PulsePhase.shrink:
+        _resumeWaveScroll();
+        final double width = widget.troughWidthMin +
+            _random.nextDouble() *
+                (widget.troughWidthMax - widget.troughWidthMin);
+        _phaseFrom = _tailAbs;
+        _phaseTo = _headAbs - width;
+        _phaseController.forward(from: 0);
+        break;
+      case _PulsePhase.troughHold:
+        _pauseWaveScrollAtZeroCrossing();
+        _holdController.duration = _scaledDuration(
+            widget.rotationDuration, widget.troughHoldRevolutions);
+        _holdController.forward(from: 0);
+        break;
+    }
+  }
 
-    if (wasGrowing) {
-      final double width = widget.peakWidthMin +
-          _random.nextDouble() * (widget.peakWidthMax - widget.peakWidthMin);
-      _phaseFrom = _headAbs;
-      _phaseTo = _tailAbs + width;
-    } else {
-      final double width = widget.troughWidthMin +
-          _random.nextDouble() *
-              (widget.troughWidthMax - widget.troughWidthMin);
-      _phaseFrom = _tailAbs;
-      _phaseTo = _headAbs - width;
+  // The wave squiggle only scrolls while the arc's length is actively
+  // changing (grow/shrink) — it holds still during the peak/trough holds,
+  // matching the real M3 spec reference, where the ripple visibly pauses
+  // whenever the arc itself isn't currently growing or shrinking.
+  void _resumeWaveScroll() {
+    if (widget.waveSpeed > 0) {
+      _wavePhaseController.repeat();
+    }
+  }
+
+  double get _radius {
+    final double maxStroke = math.max(widget.strokeWidth, widget.trackStrokeWidth);
+    return (widget.size - maxStroke) / 2;
+  }
+
+  // widget.wavelength, unless forceWavy is set and the plain wavelength
+  // would fit fewer than kM3XCircularWavyForceWavyMinWaveCount cycles around
+  // this ring — only ever lowers the wavelength (raising the wave count),
+  // never raises it.
+  double get _effectiveWavelength {
+    if (!widget.forceWavy) return widget.wavelength;
+    final double capForMinCount =
+        2 * math.pi * _radius / kM3XCircularWavyForceWavyMinWaveCount;
+    return math.min(widget.wavelength, capForMinCount);
+  }
+
+  // Number of wave cycles around the full ring at the current size — the
+  // same formula the painter itself uses, duplicated here since choosing a
+  // pause point needs to know it too.
+  double get _waveCycleCountForCurrentSize {
+    return waveCycleCount(radius: _radius, wavelength: _effectiveWavelength);
+  }
+
+  // The next wavePhase value (>= the current one, so it's always reached by
+  // continuing to scroll forward, never jumping backward) at which the wave
+  // crosses zero at the tail's angle — i.e. exactly half way between a peak
+  // and a trough, rather than sitting at one of the extremes when it freezes.
+  double _nextZeroCrossingWavePhase() {
+    final double n = _waveCycleCountForCurrentSize;
+    final double tailAngle = -math.pi / 2 + _tailAbs * 2 * math.pi;
+    // Solve tailAngle*n + phase*2π = k·π for the smallest phase >= current,
+    // stepping in halves of a cycle (zero-crossings occur twice per cycle).
+    final double base = -(tailAngle * n) / (2 * math.pi);
+    final double current = _wavePhaseController.value;
+    final double stepsNeeded = ((current - base) / 0.5).ceilToDouble();
+    return base + 0.5 * stepsNeeded;
+  }
+
+  // Keeps the wave scrolling forward, at its normal speed, until it reaches
+  // the next zero-crossing (see _nextZeroCrossingWavePhase), then stops —
+  // rather than freezing wherever the continuous scroll happened to be at
+  // the instant the hold began, which could just as easily be at a peak.
+  void _pauseWaveScrollAtZeroCrossing() {
+    if (widget.waveSpeed <= 0) {
+      _wavePhaseController.stop();
+      return;
     }
 
-    _phaseController.forward(from: 0).then((_) {
+    final double current = _wavePhaseController.value;
+    final double target = _nextZeroCrossingWavePhase();
+    final Duration cycleDuration = _wavePhaseController.duration!;
+    final Duration settleDuration = Duration(
+      microseconds:
+          ((target - current) * cycleDuration.inMicroseconds).round(),
+    );
+
+    _wavePhaseController
+        .animateTo(target, duration: settleDuration, curve: Curves.linear)
+        .then((_) {
       if (!mounted) return;
-      // Hold at the peak/trough width — the controller stays at 1.0, so
-      // animatingValue keeps rendering _phaseTo unchanged during the wait.
-      _holdTimer = Timer(holdDuration, () {
-        if (!mounted) return;
-        if (wasGrowing) {
-          _headAbs = _phaseTo;
-        } else {
-          _tailAbs = _phaseTo;
-        }
-        _headGrowing = !wasGrowing;
-        _startNextPhase();
-      });
+      // Fold back into the controller's normal [0, 1) range — subtracting a
+      // whole number of cycles from the phase doesn't change the rendered
+      // pattern, since sin is periodic — so _resumeWaveScroll's repeat()
+      // starts from a value it can loop from cleanly next time.
+      _wavePhaseController.value = _wavePhaseController.value % 1.0;
+      _wavePhaseController.stop();
     });
+  }
+
+  void _completePhase() {
+    if (!mounted) return;
+
+    _rotationAngleAtPhaseStart += _angleGainedInPhase(_pulsePhase, 1.0);
+
+    switch (_pulsePhase) {
+      case _PulsePhase.grow:
+        _headAbs = _phaseTo;
+        _pulsePhase = _PulsePhase.peakHold;
+        break;
+      case _PulsePhase.peakHold:
+        _pulsePhase = _PulsePhase.shrink;
+        break;
+      case _PulsePhase.shrink:
+        _tailAbs = _phaseTo;
+        _pulsePhase = _PulsePhase.troughHold;
+        break;
+      case _PulsePhase.troughHold:
+        _pulsePhase = _PulsePhase.grow;
+        break;
+    }
+
+    _startNextPhase();
   }
 
   @override
   void dispose() {
-    _holdTimer?.cancel();
     _wavePhaseController.dispose();
-    _rotationHeartbeatController.dispose();
     _phaseController.dispose();
+    _holdController.dispose();
     super.dispose();
   }
 
@@ -256,29 +483,47 @@ class _M3XCircularWavyLoadingIndicatorState
       child: AnimatedBuilder(
         animation: Listenable.merge([
           _wavePhaseController,
-          _rotationHeartbeatController,
           _phaseController,
+          _holdController,
         ]),
         builder: (context, child) {
           final activeColor =
               widget.color ?? M3XProgressIndicatorDefaults.activeColor(context);
 
-          final double curvedT =
-              Curves.fastOutSlowIn.transform(_phaseController.value);
-          final double animatingValue =
-              lerpDouble(_phaseFrom, _phaseTo, curvedT)!;
-          final double headFraction = _headGrowing ? animatingValue : _headAbs;
-          final double tailFraction = _headGrowing ? _tailAbs : animatingValue;
+          final bool isHold = _pulsePhase == _PulsePhase.peakHold ||
+              _pulsePhase == _PulsePhase.troughHold;
+          final double t =
+              isHold ? _holdController.value : _phaseController.value;
 
-          final double elapsedSeconds =
-              DateTime.now().difference(_rotationStartTime).inMicroseconds /
-                  1e6;
-          final double revolutionsPerSecond =
-              1000 / widget.rotationDuration.inMilliseconds;
-          final double theta =
-              elapsedSeconds * 2 * math.pi * revolutionsPerSecond;
+          double headFraction;
+          double tailFraction;
+          switch (_pulsePhase) {
+            case _PulsePhase.grow:
+              headFraction = lerpDouble(_phaseFrom, _phaseTo, t)!;
+              tailFraction = _tailAbs;
+              break;
+            case _PulsePhase.peakHold:
+              headFraction = _headAbs;
+              tailFraction = _tailAbs;
+              break;
+            case _PulsePhase.shrink:
+              headFraction = _headAbs;
+              tailFraction = lerpDouble(_phaseFrom, _phaseTo, t)!;
+              break;
+            case _PulsePhase.troughHold:
+              headFraction = _headAbs;
+              tailFraction = _tailAbs;
+              break;
+          }
+
           final double rotationRadians =
-              theta - kM3XCircularWavyLoadingCycloidDepth * math.sin(theta);
+              _rotationAngleAtPhaseStart + _angleGainedInPhase(_pulsePhase, t);
+
+          final double sizeAmplitude = widget.forceWavy
+              ? 1.0
+              : ((widget.size - kM3XCircularWavyMinSize) /
+                      (kM3XCircularWavyFullSize - kM3XCircularWavyMinSize))
+                  .clamp(0.0, 1.0);
 
           return CustomPaint(
             painter: M3XCircularWavyLoadingPainter(
@@ -286,13 +531,13 @@ class _M3XCircularWavyLoadingIndicatorState
               headFraction: headFraction,
               tailFraction: tailFraction,
               wavePhase: _wavePhaseController.value,
-              amplitude: 1.0,
+              amplitude: sizeAmplitude,
               color: activeColor,
               trackColor: trackColor,
               strokeWidth: widget.strokeWidth,
               trackStrokeWidth: widget.trackStrokeWidth,
               gapSize: widget.gapSize,
-              wavelength: widget.wavelength,
+              wavelength: _effectiveWavelength,
               isLtr: Directionality.of(context) == TextDirection.ltr,
             ),
           );

@@ -1,3 +1,25 @@
+## 0.1.5
+
+- `M3XCircularWavyLoadingIndicator`: reworked the indeterminate pulse into an explicit
+  cycle — grow, hold at peak, shrink, hold at trough, repeat — with rotation speed tied
+  to that cycle instead of running on its own independent clock:
+  - Grows and shrinks at constant rotation speed.
+  - Holds at the peak width for an exact number of full revolutions
+    (`peakHoldRevolutions`, default 1.5) before shrinking.
+  - Shrinks by the tail catching up to a fixed head, down to a resting trough width.
+  - Holds at the trough width while rotation briefly dips partway through the hold
+    (never to a full stop) before easing back to normal speed and growing again.
+  - `peakHoldDuration`/`troughHoldDuration` (`Duration`) are replaced by
+    `peakHoldRevolutions`/`troughHoldRevolutions` (`double`), since the holds are now
+    specified in rotation-periods rather than wall-clock time.
+  - The wave squiggle now pauses while the arc is holding at the peak or trough,
+    resuming only once the arc starts growing or shrinking again.
+  - Added `forceWavy` to render a small ring with full wave amplitude instead of the
+    below-44dp taper that otherwise flattens it to a plain arc — a deliberate brand
+    choice for callers who want a small indicator that still reads as wavy. Small
+    `forceWavy` rings are also guaranteed at least 7 visible wave cycles, regardless of
+    size — the default wavelength alone would otherwise fit as few as 4 on a 32dp ring.
+
 ## 0.1.4
 
 - `M3XLinearWavyProgressIndicator`: added `isFlat` to render a plain straight bar with
